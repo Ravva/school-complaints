@@ -1,0 +1,102 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Коллекция пользователей ---
+    match /users/{userId} {
+      // Получаем данные пользователя из документа для проверки роли
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      // Проверяем, является ли пользователь Администратором
+      function isAdmin() {
+        // Используем английский алиас 'admin'
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin';
+      }
+      // Проверяем, является ли пользователь владельцем документа
+      function isOwner() {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      // Чтение: Разрешено владельцу или Администратору
+      allow read: if isOwner() || isAdmin();
+
+      // Создание: Разрешено, если пользователь аутентифицирован, ID совпадает,
+      // и начальные данные (uid, email, role, createdAt) корректны.
+      // Роль не может быть 'admin' при создании. Используем английские алиасы.
+      allow create: if request.auth != null && isOwner()
+                      && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.email == request.auth.token.email
+                      && request.resource.data.role in ['student', 'parent', 'teacher'] // Английские алиасы
+                      && request.resource.data.createdAt == request.time;
+
+      // Обновление: Разрешено Администратору (для смены роли и т.д.)
+      allow update: if isAdmin();
+
+      // Удаление: Запрещено (или разрешить только Администратору)
+      allow delete: if false; // или if isAdmin();
+    }
+
+    // --- Коллекция обращений ---
+    match /complaints/{complaintId} {
+       // Получаем данные пользователя из документа для проверки роли
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+       // Проверяем, является ли пользователь Администратором
+      function isAdmin() {
+        // Используем английский алиас 'admin'
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin';
+      }
+       // Проверяем, является ли пользователь Учителем
+      function isTeacher() {
+         // Используем английский алиас 'teacher'
+         return exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'teacher';
+      }
+      // Проверяем, является ли пользователь владельцем обращения
+      function isComplaintOwner() {
+        return request.auth != null && request.auth.uid == resource.data.userId;
+      }
+       // Проверяем, назначен ли текущий Учитель ответственным
+      function isAssignedTeacher() {
+        return isTeacher() && request.auth.uid == resource.data.assignedTo;
+      }
+      // Проверяем корректность данных при создании
+      function isValidComplaintCreationData() {
+        let userData = getUserData(); // Получаем роль создающего пользователя
+        let complaintData = request.resource.data;
+        return complaintData.userId == request.auth.uid
+               && complaintData.userEmail == request.auth.token.email
+               && complaintData.userRole == userData.role // Роль должна совпадать с сохраненной
+               && complaintData.status == 'Новая'
+               && complaintData.createdAt == request.time
+               && complaintData.updatedAt == request.time
+               && complaintData.attachments is list
+               && complaintData.statusHistory is list
+               && complaintData.statusHistory.size() == 1
+               && complaintData.statusHistory[0].status == 'Новая'
+               && complaintData.statusHistory[0].userId == request.auth.uid
+               && complaintData.statusHistory[0].timestamp == request.time
+               // Учитель может создавать только "Предложение"
+               // Используем английский алиас 'teacher'
+               && (userData.role != 'teacher' || complaintData.type == 'Предложение');
+      }
+
+      // Чтение: Разрешено владельцу, Администратору или назначенному Учителю
+      allow read: if request.auth != null && (isComplaintOwner() || isAdmin() || isAssignedTeacher());
+
+      // Список (Query): Правила для запросов сложнее, пока разрешаем базовое чтение
+      allow list: if request.auth != null; // ПОКА РАЗРЕШЕНО ВСЕМ АУТЕНТИФИЦИРОВАННЫМ - УТОЧНИТЬ!
+
+      // Создание: Разрешено аутентифицированным пользователям с корректными данными
+      allow create: if request.auth != null && isValidComplaintCreationData();
+
+      // Обновление: Разрешено Администратору или назначенному Учителю (с ограничениями)
+      allow update: if request.auth != null && (isAdmin() || isAssignedTeacher()); // ПОКА УПРОЩЕНО - УТОЧНИТЬ!
+
+      // Удаление: Запрещено (или разрешить только Администратору)
+      allow delete: if false; // или if isAdmin();
+    }
+  }
+}
